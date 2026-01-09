@@ -15,6 +15,7 @@ from sklearn.preprocessing import PolynomialFeatures
 from fpdf import FPDF
 import json
 from google.oauth2 import service_account
+import base64 
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="LakeDelta", layout="wide", page_icon="💧")
@@ -382,6 +383,7 @@ class PDFReport(FPDF):
         self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
 
 # --- 4. UI & MAIN LOGIC ---
+
 st.title("🛰️ LakeDelta")
 
 if 'analysis_complete' not in st.session_state:
@@ -422,7 +424,6 @@ if run_clicked and target:
     current_coords = [target['lon'], target['lat']]
     
     # 1. FREEZE GEOMETRY (Server -> Client)
-    # This prevents the land from moving (Registration Jitter)
     roi_object = ee.Geometry.Point(current_coords).buffer(buffer_m).bounds()
     fixed_roi = roi_object.getInfo() 
     
@@ -451,13 +452,11 @@ if run_clicked and target:
                 path = os.path.join(temp_dir, f"{year}.jpg")
                 
                 # 2. GENERATE AT DISPLAY SIZE (600px)
-                # By matching the generation size to the display size, we stop the browser
-                # from resizing it, which eliminates the flickering/aliasing.
                 geemap.get_image_thumbnail(
                     img.visualize(**vis), 
                     path, 
                     {
-                        'dimensions': 600,     # Matches the st.image width below
+                        'dimensions': 600,     
                         'region': fixed_roi,   # Frozen geometry
                         'crs': 'EPSG:3857',    # Frozen Grid
                         'format': 'jpg'
@@ -588,14 +587,19 @@ if st.session_state.analysis_complete:
 
     with tab3:
          st.markdown("<h3 style='text-align: center; color: #2c3e50;'>🛰️ Annual Satellite Timelapse</h3>", unsafe_allow_html=True)
-         c1, c2, c3 = st.columns([3, 4, 3])
+         
+         # 3. FIX: FORCE HTML CENTERING
+         # Using HTML logic instead of Streamlit columns guarantees it is centered and fixed width.
          gif_path = os.path.join(out_dir, "Timelapse.gif")
          if os.path.exists(gif_path):
-             with c2: 
-                 # 3. FIX DISPLAY WIDTH
-                 # Use a fixed pixel width (600px) instead of stretching.
-                 # This aligns pixels 1:1 with the generated image, stopping aliasing/flicker.
-                 st.image(gif_path, width=600, caption="2017-2024 Timelapse")
+             with open(gif_path, "rb") as file_:
+                 data_url = base64.b64encode(file_.read()).decode("utf-8")
+             
+             # This HTML div aligns the image to the center, no matter how wide the screen is.
+             st.markdown(
+                 f'<div style="text-align: center;"><img src="data:image/gif;base64,{data_url}" width="600" style="border-radius: 5px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"></div>',
+                 unsafe_allow_html=True,
+             )
 
     with tab4:
         st.header("Data Export")
