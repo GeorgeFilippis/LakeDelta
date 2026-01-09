@@ -231,7 +231,8 @@ def add_academic_legend(image_path, mode="heatmap"):
         cv2.putText(footer, "Deep Loss", (start_x + 170, 44), font, label_scale, (70,70,70), thickness, cv2.LINE_AA)
         cv2.putText(footer, "FIG 2: Spectral Decline Blueprint", ((w-180)//2, 20), font, title_scale, (0,0,0), thickness, cv2.LINE_AA)
 
-    final_img = np.vstack([img, footer])
+    # final_img = np.vstack([img, footer])
+    final_img = np.vstack([img])
     cv2.imwrite(image_path, final_img)
 
 @st.cache_data
@@ -624,6 +625,7 @@ if st.session_state.analysis_complete:
                 st.download_button("Download CSV Data", f, "Data.csv", key="dl_csv")
 
     st.success("LakeDelta Analysis Ready.")
+
 
 
 
