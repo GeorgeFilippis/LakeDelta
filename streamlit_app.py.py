@@ -384,7 +384,6 @@ class PDFReport(FPDF):
 # --- 4. UI & MAIN LOGIC ---
 st.title("🛰️ LakeDelta")
 
-# Initialize Session State variables if they don't exist
 if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 if 'analysis_results' not in st.session_state:
@@ -412,23 +411,23 @@ with st.sidebar:
         
     st.divider()
     buffer_m = st.slider("Analysis Buffer (meters)", 1000, 20000, 5000, step=1000)
-    
-    # Check button state
     run_clicked = st.button("🚀 Run Analysis", type="primary")
 
-# --- LOGIC PART 1: PROCESSING (Runs ONLY when button is clicked) ---
+# --- LOGIC PART 1: PROCESSING ---
 if run_clicked and target:
     out_dir = os.path.join(OUTPUT_BASE, target['name'].replace(" ", "_"))
     temp_dir = os.path.join(out_dir, "frames")
     if not os.path.exists(temp_dir): os.makedirs(temp_dir)
     
-    # Store coordinates for later use
     current_coords = [target['lon'], target['lat']]
-    roi = ee.Geometry.Point(current_coords).buffer(buffer_m)
     
-    with st.spinner("Processing Global Data (This may take a moment)..."):
-        # 1. Earth Engine Loop
-        s2 = (ee.ImageCollection("COPERNICUS/S2_SR").filterBounds(roi).filter(ee.Filter.calendarRange(6, 9, 'month'))
+    # 1. FREEZE GEOMETRY (Server -> Client)
+    # This prevents the land from moving (Registration Jitter)
+    roi_object = ee.Geometry.Point(current_coords).buffer(buffer_m).bounds()
+    fixed_roi = roi_object.getInfo() 
+    
+    with st.spinner("Processing Global Data..."):
+        s2 = (ee.ImageCollection("COPERNICUS/S2_SR").filterBounds(roi_object).filter(ee.Filter.calendarRange(6, 9, 'month'))
               .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)).select(['B4', 'B3', 'B2', 'B8', 'B11']))
         
         records = []; local_paths = []
@@ -437,33 +436,42 @@ if run_clicked and target:
         for i, year in enumerate(range(2017, 2025)):
             try:
                 img = s2.filter(ee.Filter.calendarRange(year, year, 'year')).median()
-                # Verification step
-                stats = img.reduceRegion(ee.Reducer.mean(), roi, 100).getInfo()
+                stats = img.reduceRegion(ee.Reducer.mean(), roi_object, 100).getInfo()
                 if not stats: continue
 
                 mndwi = img.normalizedDifference(['B3', 'B11'])
                 water = mndwi.gt(0).rename('water')
-                area = water.multiply(ee.Image.pixelArea()).reduceRegion(ee.Reducer.sum(), roi, 20, maxPixels=1e9).get('water').getInfo()
+                area = water.multiply(ee.Image.pixelArea()).reduceRegion(ee.Reducer.sum(), roi_object, 20, maxPixels=1e9).get('water').getInfo()
                 area_km = round(area / 1e6, 2) if area else 0.0
                 
-                ndvi = img.normalizedDifference(['B8', 'B4']).reduceRegion(ee.Reducer.mean(), roi, 100).get('nd').getInfo()
-                
+                ndvi = img.normalizedDifference(['B8', 'B4']).reduceRegion(ee.Reducer.mean(), roi_object, 100).get('nd').getInfo()
                 records.append({"Year": year, "Area_km": area_km, "NDVI": round(ndvi or 0, 3)})
                 
-                # Thumbnail Generation
                 vis = {'bands': ['B4', 'B3', 'B2'], 'min': 0, 'max': 3000, 'gamma': 1.2}
                 path = os.path.join(temp_dir, f"{year}.jpg")
-                geemap.get_image_thumbnail(img.visualize(**vis), path, {'dimensions': 1000, 'region': roi})
                 
-                # Text Overlay
+                # 2. GENERATE AT DISPLAY SIZE (600px)
+                # By matching the generation size to the display size, we stop the browser
+                # from resizing it, which eliminates the flickering/aliasing.
+                geemap.get_image_thumbnail(
+                    img.visualize(**vis), 
+                    path, 
+                    {
+                        'dimensions': 600,     # Matches the st.image width below
+                        'region': fixed_roi,   # Frozen geometry
+                        'crs': 'EPSG:3857',    # Frozen Grid
+                        'format': 'jpg'
+                    }
+                )
+                
                 img_cv = cv2.imread(path); h, w, _ = img_cv.shape
                 font = cv2.FONT_HERSHEY_SIMPLEX
                 text = f"{year} | Area: {area_km} km2"
                 banner_h = int(h * 0.10); overlay = img_cv.copy()
                 cv2.rectangle(overlay, (0,0), (w, banner_h), (0,0,0), -1)
                 cv2.addWeighted(overlay, 0.7, img_cv, 0.3, 0, img_cv)
-                (t_w, t_h), _ = cv2.getTextSize(text, font, 1.0, 2)
-                cv2.putText(img_cv, text, ((w - t_w) // 2, int((banner_h + t_h) / 2)), font, 1.0, (255,255,255), 2, cv2.LINE_AA)
+                (t_w, t_h), _ = cv2.getTextSize(text, font, 0.8, 2)
+                cv2.putText(img_cv, text, ((w - t_w) // 2, int((banner_h + t_h) / 2)), font, 0.8, (255,255,255), 2, cv2.LINE_AA)
                 cv2.imwrite(path, img_cv)
                 local_paths.append(path)
             except Exception as e:
@@ -472,10 +480,9 @@ if run_clicked and target:
             bar.progress((i + 1) / 8)
 
         if not records: 
-            st.error("No valid satellite data found for this region.")
+            st.error("No valid satellite data found.")
             st.stop()
         
-        # 2. Process Dataframes & AI
         df = pd.DataFrame(records)
         clim_df = get_water_balance(current_coords, buffer_m, 2017, 2024)
         seas_df = get_seasonal_profile(current_coords, buffer_m)
@@ -484,12 +491,10 @@ if run_clicked and target:
         z_score = (final_df.iloc[-1]['Area_km'] - final_df['Area_km'].mean()) / final_df['Area_km'].std()
         status = "CRITICAL DROUGHT" if z_score < -1.5 else "Moderate Decline" if z_score < -0.5 else "Stable"
         
-        # Save files
         final_df.to_csv(os.path.join(out_dir, "Full_Analysis.csv"), index=False)
-        geemap.make_gif(local_paths, os.path.join(out_dir, "Timelapse.gif"), fps=1)
+        geemap.make_gif(local_paths, os.path.join(out_dir, "Timelapse.gif"), fps=0.5)
         roi_img_path = generate_roi_visual(current_coords, buffer_m, out_dir, target['name'])
         
-        # 3. SAVE TO SESSION STATE
         st.session_state.analysis_results = {
             "final_df": final_df,
             "seas_df": seas_df,
@@ -501,12 +506,12 @@ if run_clicked and target:
             "roi_img_path": roi_img_path,
             "target_name": target['name'],
             "buffer_m": buffer_m,
-            "coords": current_coords # <--- CRITICAL FIX: Save the coordinates here
+            "coords": current_coords 
         }
         st.session_state.analysis_complete = True
         st.rerun()
 
-# --- LOGIC PART 2: DISPLAY (Runs whenever data is available) ---
+# --- LOGIC PART 2: DISPLAY ---
 if st.session_state.analysis_complete:
     res = st.session_state.analysis_results
     final_df = res["final_df"]
@@ -519,12 +524,10 @@ if st.session_state.analysis_complete:
     roi_img_path = res["roi_img_path"]
     target_name = res["target_name"]
     buffer_m = res["buffer_m"]
-    saved_coords = res["coords"] # <--- Retrieve coordinates
+    saved_coords = res["coords"]
     
-    # ---------------- UI TABS ----------------
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📸 Spectral Forensics", "🎬 Timelapse", "💾 Downloads"])
 
-    # --- TAB 1: DASHBOARD ---
     with tab1:
         c1, c2 = st.columns([2, 1])
         with c1:
@@ -533,7 +536,6 @@ if st.session_state.analysis_complete:
             if roi_img_path and os.path.exists(roi_img_path):
                 st.image(roi_img_path, caption="🔴 ROI Analysis Zone (5km)", use_container_width=True)
         
-        # COMBO CHART
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         fig.add_trace(go.Bar(x=final_df['Year'], y=final_df['Rainfall_mm'], name="Rainfall (mm)", marker_color='rgba(0, 196, 154, 0.4)', width=0.3), secondary_y=True)
         fig.add_trace(go.Scatter(x=final_df['Year'], y=final_df['Area_km'], name="Water Area (km²)", mode='lines+markers', line=dict(color='#1E88E5', width=4), marker=dict(size=8, color='#1E88E5')), secondary_y=False)
@@ -541,7 +543,6 @@ if st.session_state.analysis_complete:
         fig.update_layout(title="Hydrological Correlation & AI Forecast", title_x=0.5, template="plotly_white", legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center'), height=450, hovermode="x unified", xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#f0f0f0'))
         st.plotly_chart(fig, use_container_width=True)
         
-        # ECO-CHART
         fig_eco = go.Figure(data=go.Scatter(
             x=final_df['Year'], y=final_df['Area_km'], 
             mode='lines+markers+text', 
@@ -553,7 +554,6 @@ if st.session_state.analysis_complete:
         fig_eco.update_layout(title="Eco-Health Correlation (Area vs NDVI over Time)", title_x=0.5, xaxis_title="Year", yaxis_title="Water Area (km²)", template="plotly_white", height=450)
         st.plotly_chart(fig_eco, use_container_width=True)
 
-        # SEASONAL
         fig_s = go.Figure(data=[
             go.Bar(name='Precipitation', x=seas_df['Month'], y=seas_df['Rain_Avg'], marker_color='#66bb6a'),
             go.Bar(name='Evapotranspiration', x=seas_df['Month'], y=seas_df['Evap_Avg'], marker_color='#ef5350')
@@ -561,21 +561,16 @@ if st.session_state.analysis_complete:
         fig_s.update_layout(title="Seasonal Climatology (Avg 2017-2024)", title_x=0.5, template="plotly_white", height=400, legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center'))
         st.plotly_chart(fig_s, use_container_width=True)
 
-    # --- TAB 2: SPECTRAL FORENSICS ---
     with tab2:
         st.markdown("<h3 style='text-align: center;'>📸 Advanced Spectral Forensics</h3>", unsafe_allow_html=True)
-        
         year_max = int(final_df.loc[final_df['Area_km'].idxmax()]['Year'])
         year_min = int(final_df.loc[final_df['Area_km'].idxmin()]['Year'])
-        
         path_heat = os.path.join(out_dir, f"spectral_heatmap_{buffer_m}.jpg")
         path_diff = os.path.join(out_dir, f"spectral_decline_{buffer_m}.jpg")
         
-        # Check if files exist. If not, try to regenerate using SAVED COORDS
         if not (os.path.exists(path_heat) and os.path.exists(path_diff)):
             with st.spinner("Generating JRC Spectral Analysis..."):
                 try:
-                    # FIX: Use 'saved_coords' (real lat/lon) instead of the invalid dummy list
                     path_heat, path_diff = generate_spectral_forensics(saved_coords, buffer_m, year_max, year_min, out_dir)
                 except Exception as e:
                     st.error(f"Could not generate spectral images: {e}")
@@ -591,28 +586,29 @@ if st.session_state.analysis_complete:
         else:
              st.info("Spectral images could not be loaded.")
 
-    # --- TAB 3: TIMELAPSE ---
     with tab3:
          st.markdown("<h3 style='text-align: center; color: #2c3e50;'>🛰️ Annual Satellite Timelapse</h3>", unsafe_allow_html=True)
          c1, c2, c3 = st.columns([3, 4, 3])
-         with c2: st.image(os.path.join(out_dir, "Timelapse.gif"), use_container_width=True)
+         gif_path = os.path.join(out_dir, "Timelapse.gif")
+         if os.path.exists(gif_path):
+             with c2: 
+                 # 3. FIX DISPLAY WIDTH
+                 # Use a fixed pixel width (600px) instead of stretching.
+                 # This aligns pixels 1:1 with the generated image, stopping aliasing/flicker.
+                 st.image(gif_path, width=600, caption="2017-2024 Timelapse")
 
-
-    # --- TAB 4: DOWNLOADS ---
     with tab4:
         st.header("Data Export")
-        
         pdf_path = os.path.join(out_dir, f"{target_name}_Report.pdf")
         if not os.path.exists(pdf_path):
              pdf_path = generate_pdf(out_dir, target_name, status, final_df, buffer_m)
-             
         with open(pdf_path, "rb") as f: 
             st.download_button("Download AI Report PDF", f, f"{target_name}_Report.pdf", key="dl_pdf")
-            
         csv_path = os.path.join(out_dir, "Full_Analysis.csv")
         if os.path.exists(csv_path):
             with open(csv_path, "rb") as f: 
                 st.download_button("Download CSV Data", f, "Data.csv", key="dl_csv")
 
     st.success("LakeDelta Analysis Ready.")
+
 
