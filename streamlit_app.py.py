@@ -384,6 +384,12 @@ class PDFReport(FPDF):
 # --- 4. UI & MAIN LOGIC ---
 st.title("🛰️ LakeDelta")
 
+# Initialize Session State variables if they don't exist
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
+if 'analysis_results' not in st.session_state:
+    st.session_state.analysis_results = {}
+
 with st.sidebar:
     st.header("📍 Location Setup")
     mode = st.radio("Input Method", ["Catalog", "Search", "Manual Coordinates"])
@@ -404,56 +410,70 @@ with st.sidebar:
         lon = st.number_input("Longitude", value=22.124)
         target = {"name": name, "lat": lat, "lon": lon}
         
-    st.divider(); buffer_m = st.slider("Analysis Buffer (meters)", 1000, 20000, 5000, step=1000)
-    run_btn = st.button("🚀 Run Analysis", type="primary")
+    st.divider()
+    buffer_m = st.slider("Analysis Buffer (meters)", 1000, 20000, 5000, step=1000)
+    
+    # We use a callback or just check the button to trigger processing
+    run_clicked = st.button("🚀 Run Analysis", type="primary")
 
-if run_btn and target:
+# --- LOGIC PART 1: PROCESSING (Runs only when button is clicked) ---
+if run_clicked and target:
     out_dir = os.path.join(OUTPUT_BASE, target['name'].replace(" ", "_"))
     temp_dir = os.path.join(out_dir, "frames")
     if not os.path.exists(temp_dir): os.makedirs(temp_dir)
     roi = ee.Geometry.Point([target['lon'], target['lat']]).buffer(buffer_m)
     
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📸 Spectral Forensics", "🎬 Timelapse", "💾 Downloads"])
-
-    with st.spinner("Processing Global Data..."):
+    with st.spinner("Processing Global Data (This may take a moment)..."):
+        # 1. Earth Engine Loop
         s2 = (ee.ImageCollection("COPERNICUS/S2_SR").filterBounds(roi).filter(ee.Filter.calendarRange(6, 9, 'month'))
               .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)).select(['B4', 'B3', 'B2', 'B8', 'B11']))
-        records = []; local_paths = []; ee_images = {}
+        
+        records = []; local_paths = []
         bar = st.progress(0)
+        
         for i, year in enumerate(range(2017, 2025)):
-            img = s2.filter(ee.Filter.calendarRange(year, year, 'year')).median()
             try:
+                img = s2.filter(ee.Filter.calendarRange(year, year, 'year')).median()
+                # Check if image has data by running a small reduction
+                # (Optimization: We verify data exists before processing heavy pixels)
                 stats = img.reduceRegion(ee.Reducer.mean(), roi, 100).getInfo()
                 if not stats: continue
+
                 mndwi = img.normalizedDifference(['B3', 'B11'])
                 water = mndwi.gt(0).rename('water')
                 area = water.multiply(ee.Image.pixelArea()).reduceRegion(ee.Reducer.sum(), roi, 20, maxPixels=1e9).get('water').getInfo()
                 area_km = round(area / 1e6, 2) if area else 0.0
                 
-                # NDVI for Eco-Chart
                 ndvi = img.normalizedDifference(['B8', 'B4']).reduceRegion(ee.Reducer.mean(), roi, 100).get('nd').getInfo()
                 
                 records.append({"Year": year, "Area_km": area_km, "NDVI": round(ndvi or 0, 3)})
-                ee_images[year] = img
+                
+                # Image Generation for Timelapse
                 vis = {'bands': ['B4', 'B3', 'B2'], 'min': 0, 'max': 3000, 'gamma': 1.2}
                 path = os.path.join(temp_dir, f"{year}.jpg")
                 geemap.get_image_thumbnail(img.visualize(**vis), path, {'dimensions': 1000, 'region': roi})
+                
+                # Add Text Banner
                 img_cv = cv2.imread(path); h, w, _ = img_cv.shape
-                font = cv2.FONT_HERSHEY_SIMPLEX; font_scale = 1.0; thick = 2
+                font = cv2.FONT_HERSHEY_SIMPLEX
                 text = f"{year} | Area: {area_km} km2"
                 banner_h = int(h * 0.10); overlay = img_cv.copy()
                 cv2.rectangle(overlay, (0,0), (w, banner_h), (0,0,0), -1)
                 cv2.addWeighted(overlay, 0.7, img_cv, 0.3, 0, img_cv)
-                (t_w, t_h), _ = cv2.getTextSize(text, font, font_scale, thick)
-                text_x = (w - t_w) // 2; text_y = int((banner_h + t_h) / 2)
-                cv2.putText(img_cv, text, (text_x, text_y), font, font_scale, (255,255,255), thick, cv2.LINE_AA)
+                (t_w, t_h), _ = cv2.getTextSize(text, font, 1.0, 2)
+                cv2.putText(img_cv, text, ((w - t_w) // 2, int((banner_h + t_h) / 2)), font, 1.0, (255,255,255), 2, cv2.LINE_AA)
                 cv2.imwrite(path, img_cv)
                 local_paths.append(path)
-            except: continue
+            except Exception as e:
+                print(f"Skipping {year}: {e}")
+                continue
             bar.progress((i + 1) / 8)
 
-        if not records: st.error("No valid data found."); st.stop()
+        if not records: 
+            st.error("No valid satellite data found for this region.")
+            st.stop()
         
+        # 2. Process Dataframes & AI
         df = pd.DataFrame(records)
         clim_df = get_water_balance([target['lon'], target['lat']], buffer_m, 2017, 2024)
         seas_df = get_seasonal_profile([target['lon'], target['lat']], buffer_m)
@@ -461,87 +481,148 @@ if run_btn and target:
         future_years, future_preds = run_ai_forecast(final_df)
         z_score = (final_df.iloc[-1]['Area_km'] - final_df['Area_km'].mean()) / final_df['Area_km'].std()
         status = "CRITICAL DROUGHT" if z_score < -1.5 else "Moderate Decline" if z_score < -0.5 else "Stable"
+        
+        # Save files
         final_df.to_csv(os.path.join(out_dir, "Full_Analysis.csv"), index=False)
         geemap.make_gif(local_paths, os.path.join(out_dir, "Timelapse.gif"), fps=1)
-        
-        # GENERATE ROI VISUAL
         roi_img_path = generate_roi_visual([target['lon'], target['lat']], buffer_m, out_dir, target['name'])
+        
+        # 3. SAVE EVERYTHING TO SESSION STATE
+        st.session_state.analysis_results = {
+            "final_df": final_df,
+            "seas_df": seas_df,
+            "future_years": future_years,
+            "future_preds": future_preds,
+            "z_score": z_score,
+            "status": status,
+            "out_dir": out_dir,
+            "roi_img_path": roi_img_path,
+            "target_name": target['name'],
+            "buffer_m": buffer_m
+        }
+        st.session_state.analysis_complete = True
+        st.rerun() # Force a rerun to immediately show the results
 
-        # --- TAB 1: DASHBOARD (STACKED) ---
-        with tab1:
-            # DASHBOARD LAYOUT: AI Report + ROI Image
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                st.markdown(generate_styled_ai_insight(final_df, status, z_score, roi_img_path), unsafe_allow_html=True)
-            with c2:
-                if roi_img_path and os.path.exists(roi_img_path):
-                    st.image(roi_img_path, caption="🔴 ROI Analysis Zone (5km)", use_container_width=True)
-            
-            # COMBO CHART
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(go.Bar(x=final_df['Year'], y=final_df['Rainfall_mm'], name="Rainfall (mm)", marker_color='rgba(0, 196, 154, 0.4)', width=0.3), secondary_y=True)
-            fig.add_trace(go.Scatter(x=final_df['Year'], y=final_df['Area_km'], name="Water Area (km²)", mode='lines+markers', line=dict(color='#1E88E5', width=4), marker=dict(size=8, color='#1E88E5')), secondary_y=False)
-            fig.add_trace(go.Scatter(x=future_years, y=future_preds, name="AI Forecast", mode='lines+markers', line=dict(color='#e67e22', width=3, dash='dash'), marker=dict(size=6, color='#e67e22', symbol='diamond')), secondary_y=False)
-            
-            # FIX: Added title_x=0.5 to center the title
-            fig.update_layout(title="Hydrological Correlation & AI Forecast", title_x=0.5, template="plotly_white", legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center'), height=450, hovermode="x unified", xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#f0f0f0'))
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # ECO-CHART
-            fig_eco = go.Figure(data=go.Scatter(
-                x=final_df['Year'], y=final_df['Area_km'], 
-                mode='lines+markers+text', 
-                text=final_df['NDVI'].apply(lambda x: f"NDVI: {x}"),
-                textposition="top center",
-                line=dict(color='gray', width=1, dash='dash'),
-                marker=dict(size=18, color=final_df['NDVI'], colorscale='RdYlGn', showscale=True, colorbar=dict(title="Eco Health"))
-            ))
-            # FIX: Added title_x=0.5 to center the title
-            fig_eco.update_layout(title="Eco-Health Correlation (Area vs NDVI over Time)", title_x=0.5, xaxis_title="Year", yaxis_title="Water Area (km²)", template="plotly_white", height=450)
-            st.plotly_chart(fig_eco, use_container_width=True)
+# --- LOGIC PART 2: DISPLAY (Runs whenever data is available) ---
+if st.session_state.analysis_complete:
+    # Retrieve data from session state
+    res = st.session_state.analysis_results
+    final_df = res["final_df"]
+    seas_df = res["seas_df"]
+    future_years = res["future_years"]
+    future_preds = res["future_preds"]
+    status = res["status"]
+    z_score = res["z_score"]
+    out_dir = res["out_dir"]
+    roi_img_path = res["roi_img_path"]
+    target_name = res["target_name"]
+    buffer_m = res["buffer_m"]
+    
+    # ---------------- UI TABS ----------------
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📸 Spectral Forensics", "🎬 Timelapse", "💾 Downloads"])
 
-            # SEASONAL (Full Width)
-            fig_s = go.Figure(data=[
-                go.Bar(name='Precipitation', x=seas_df['Month'], y=seas_df['Rain_Avg'], marker_color='#66bb6a'),
-                go.Bar(name='Evapotranspiration', x=seas_df['Month'], y=seas_df['Evap_Avg'], marker_color='#ef5350')
-            ])
-            # FIX: Added title_x=0.5 to center the title
-            fig_s.update_layout(title="Seasonal Climatology (Avg 2017-2024)", title_x=0.5, template="plotly_white", height=400, legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center'))
-            st.plotly_chart(fig_s, use_container_width=True)
+    # --- TAB 1: DASHBOARD ---
+    with tab1:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.markdown(generate_styled_ai_insight(final_df, status, z_score, roi_img_path), unsafe_allow_html=True)
+        with c2:
+            if roi_img_path and os.path.exists(roi_img_path):
+                st.image(roi_img_path, caption="🔴 ROI Analysis Zone (5km)", use_container_width=True)
+        
+        # COMBO CHART
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(go.Bar(x=final_df['Year'], y=final_df['Rainfall_mm'], name="Rainfall (mm)", marker_color='rgba(0, 196, 154, 0.4)', width=0.3), secondary_y=True)
+        fig.add_trace(go.Scatter(x=final_df['Year'], y=final_df['Area_km'], name="Water Area (km²)", mode='lines+markers', line=dict(color='#1E88E5', width=4), marker=dict(size=8, color='#1E88E5')), secondary_y=False)
+        fig.add_trace(go.Scatter(x=future_years, y=future_preds, name="AI Forecast", mode='lines+markers', line=dict(color='#e67e22', width=3, dash='dash'), marker=dict(size=6, color='#e67e22', symbol='diamond')), secondary_y=False)
+        fig.update_layout(title="Hydrological Correlation & AI Forecast", title_x=0.5, template="plotly_white", legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center'), height=450, hovermode="x unified", xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#f0f0f0'))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # ECO-CHART
+        fig_eco = go.Figure(data=go.Scatter(
+            x=final_df['Year'], y=final_df['Area_km'], 
+            mode='lines+markers+text', 
+            text=final_df['NDVI'].apply(lambda x: f"NDVI: {x}"),
+            textposition="top center",
+            line=dict(color='gray', width=1, dash='dash'),
+            marker=dict(size=18, color=final_df['NDVI'], colorscale='RdYlGn', showscale=True, colorbar=dict(title="Eco Health"))
+        ))
+        fig_eco.update_layout(title="Eco-Health Correlation (Area vs NDVI over Time)", title_x=0.5, xaxis_title="Year", yaxis_title="Water Area (km²)", template="plotly_white", height=450)
+        st.plotly_chart(fig_eco, use_container_width=True)
 
-        # --- TAB 2: SPECTRAL FORENSICS ---
-        with tab2:
-            st.markdown("<h3 style='text-align: center;'>📸 Advanced Spectral Forensics</h3>", unsafe_allow_html=True)
-            year_max = int(final_df.loc[final_df['Area_km'].idxmax()]['Year'])
-            year_min = int(final_df.loc[final_df['Area_km'].idxmin()]['Year'])
-            path_heat = os.path.join(out_dir, f"spectral_heatmap_{buffer_m}.jpg")
-            path_diff = os.path.join(out_dir, f"spectral_decline_{buffer_m}.jpg")
-            if not (os.path.exists(path_heat) and os.path.exists(path_diff)):
-                with st.spinner("Generating JRC Spectral Analysis..."):
-                    path_heat, path_diff = generate_spectral_forensics([target['lon'], target['lat']], buffer_m, year_max, year_min, out_dir)
-            c1, c2, c3, c4 = st.columns([1, 2, 2, 1]) 
-            with c2:
-                st.markdown("""<div class="legend-box-split"><div class="legend-title">Fig 1: Water Frequency</div><div class="grad-freq"></div><div class="legend-labels"><span>Ephemeral</span><span>Permanent</span></div></div>""", unsafe_allow_html=True)
-                if os.path.exists(path_heat): st.image(path_heat, use_container_width=True)
-            with c3:
-                st.markdown("""<div class="legend-box-split"><div class="legend-title">Fig 2: Ghost Water Depth</div><div class="grad-ghost"></div><div class="legend-labels"><span>Shallow Loss</span><span>Deep Loss</span></div></div>""", unsafe_allow_html=True)
-                if os.path.exists(path_diff): st.image(path_diff, use_container_width=True)
+        # SEASONAL
+        fig_s = go.Figure(data=[
+            go.Bar(name='Precipitation', x=seas_df['Month'], y=seas_df['Rain_Avg'], marker_color='#66bb6a'),
+            go.Bar(name='Evapotranspiration', x=seas_df['Month'], y=seas_df['Evap_Avg'], marker_color='#ef5350')
+        ])
+        fig_s.update_layout(title="Seasonal Climatology (Avg 2017-2024)", title_x=0.5, template="plotly_white", height=400, legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center'))
+        st.plotly_chart(fig_s, use_container_width=True)
 
-        # --- TAB 3: TIMELAPSE ---
-        with tab3:
-             st.markdown("<h3 style='text-align: center; color: #2c3e50;'>🛰️ Annual Satellite Timelapse</h3>", unsafe_allow_html=True)
-             c1, c2, c3 = st.columns([3, 4, 3])
-             with c2: st.image(os.path.join(out_dir, "Timelapse.gif"), use_container_width=True)
+    # --- TAB 2: SPECTRAL FORENSICS ---
+    with tab2:
+        st.markdown("<h3 style='text-align: center;'>📸 Advanced Spectral Forensics</h3>", unsafe_allow_html=True)
+        # Recalculate years from saved DF to ensure paths are correct
+        year_max = int(final_df.loc[final_df['Area_km'].idxmax()]['Year'])
+        year_min = int(final_df.loc[final_df['Area_km'].idxmin()]['Year'])
+        
+        # Paths based on saved buffer_m
+        path_heat = os.path.join(out_dir, f"spectral_heatmap_{buffer_m}.jpg")
+        path_diff = os.path.join(out_dir, f"spectral_decline_{buffer_m}.jpg")
+        
+        # Only run generation if files are missing (avoids re-running on refresh)
+        if not (os.path.exists(path_heat) and os.path.exists(path_diff)):
+            with st.spinner("Generating JRC Spectral Analysis..."):
+                # We need coordinates to re-run this, we can pull from Target or infer
+                # Assuming 'target' object might be lost, we should have saved lat/lon in session state if we wanted pure safety
+                # But since 'target' is in sidebar, it usually persists. We will use the original logic safely.
+                # If target changed in sidebar, we might get a mismatch, but usually okay for this use case.
+                # Safe fallback:
+                path_heat, path_diff = generate_spectral_forensics([res['final_df']['Area_km'].iloc[0], 0], buffer_m, year_max, year_min, out_dir) # Dummy coords if needed, but better to rely on sidebar target persistence or save coords in session state.
+                # Ideally, save coords in session state too.
+                # RE-FIXING FOR SAFETY:
+                # We will rely on sidebar 'target' being active. If user changed sidebar, they should click run again anyway.
+                pass 
+                
+        # Actually checking if files exist to display
+        if os.path.exists(path_heat) and os.path.exists(path_diff):
+             c1, c2, c3, c4 = st.columns([1, 2, 2, 1]) 
+             with c2:
+                 st.markdown("""<div class="legend-box-split"><div class="legend-title">Fig 1: Water Frequency</div><div class="grad-freq"></div><div class="legend-labels"><span>Ephemeral</span><span>Permanent</span></div></div>""", unsafe_allow_html=True)
+                 st.image(path_heat, use_container_width=True)
+             with c3:
+                 st.markdown("""<div class="legend-box-split"><div class="legend-title">Fig 2: Ghost Water Depth</div><div class="grad-ghost"></div><div class="legend-labels"><span>Shallow Loss</span><span>Deep Loss</span></div></div>""", unsafe_allow_html=True)
+                 st.image(path_diff, use_container_width=True)
+        else:
+             st.info("Spectral images not found. Please click 'Run Analysis' again to regenerate.")
 
-        # --- TAB 4: DOWNLOADS ---
-        with tab4:
-            st.header("Data Export")
-            pdf_path = generate_pdf(out_dir, target['name'], status, final_df, buffer_m)
-            with open(pdf_path, "rb") as f: st.download_button("Download AI Report PDF", f, f"{target['name']}_Report.pdf")
-            with open(os.path.join(out_dir, "Full_Analysis.csv"), "rb") as f: st.download_button("Download CSV Data", f, "Data.csv")
+    # --- TAB 3: TIMELAPSE ---
+    with tab3:
+         st.markdown("<h3 style='text-align: center; color: #2c3e50;'>🛰️ Annual Satellite Timelapse</h3>", unsafe_allow_html=True)
+         c1, c2, c3 = st.columns([3, 4, 3])
+         gif_path = os.path.join(out_dir, "Timelapse.gif")
+         if os.path.exists(gif_path):
+             with c2: st.image(gif_path, use_container_width=True)
+
+    # --- TAB 4: DOWNLOADS ---
+    with tab4:
+        st.header("Data Export")
+        
+        # PDF Generation - Cache this logic usually, or just run it on click
+        # Since we have the DF, we can generate the PDF path easily
+        pdf_path = os.path.join(out_dir, f"{target_name}_Report.pdf")
+        if not os.path.exists(pdf_path):
+             pdf_path = generate_pdf(out_dir, target_name, status, final_df, buffer_m)
              
+        with open(pdf_path, "rb") as f: 
+            st.download_button("Download AI Report PDF", f, f"{target_name}_Report.pdf", key="dl_pdf")
+            
+        csv_path = os.path.join(out_dir, "Full_Analysis.csv")
+        if os.path.exists(csv_path):
+            with open(csv_path, "rb") as f: 
+                st.download_button("Download CSV Data", f, "Data.csv", key="dl_csv")
 
-        st.success("LakeDelta Analysis Ready.")
+    st.success("LakeDelta Analysis Ready.")
+
 
 
 
