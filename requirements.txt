@@ -1,0 +1,13 @@
+streamlit
+earthengine-api
+geemap
+matplotlib
+pandas
+opencv-python-headless
+numpy
+Pillow
+geopy
+plotly
+scikit-learn
+fpdf
+kaleido==0.2.1
