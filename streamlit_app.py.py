@@ -79,7 +79,7 @@ try:
     scopes = ['https://www.googleapis.com/auth/earthengine']
 
     # 3. Create the credentials object
-    creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+    creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=scopes)
 
     # 4. Initialize Earth Engine
     ee.Initialize(credentials=creds)
@@ -542,5 +542,6 @@ if run_btn and target:
              
 
         st.success("LakeDelta Analysis Ready.")
+
 
 
