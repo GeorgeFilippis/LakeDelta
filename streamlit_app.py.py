@@ -70,26 +70,27 @@ st.markdown("""
 
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
-# Your Project ID
-PROJECT_ID = ''
-
 try:
-    # 1. Try to detect if we are on Streamlit Cloud using Secrets
-    if "EARTHENGINE_TOKEN" in st.secrets:
-        # Reconstruct the credentials from the secret string
-        creds_info = json.loads(st.secrets["EARTHENGINE_TOKEN"])
-        creds = Credentials.from_authorized_user_info(creds_info)
-        ee.Initialize(creds, project=PROJECT_ID)
-        # st.success("Connected to Earth Engine via Cloud Secrets!") # Optional debug
-    else:
-        # 2. If no secrets, assume local machine and use standard auth
-        ee.Initialize(project=PROJECT_ID)
-except:
-    # 3. If all else fails (first time local run), trigger browser auth
-    ee.Authenticate()
-    ee.Initialize(project=PROJECT_ID)
+    # 1. Retrieve secrets from the [earth_engine] section in secrets.toml
+    # Streamlit automatically parses the TOML into a dictionary
+    service_account_info = st.secrets["earth_engine"]
 
-OUTPUT_BASE = r"F:\Lake_Project\App_Analysis"
+    # 2. Define the required scope for Earth Engine
+    scopes = ['https://www.googleapis.com/auth/earthengine']
+
+    # 3. Create the credentials object
+    creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+
+    # 4. Initialize Earth Engine
+    ee.Initialize(credentials=creds)
+    
+except Exception as e:
+    st.error(f"🚨 Earth Engine Authentication Failed: {e}")
+    st.info("Please ensure your .streamlit/secrets.toml file is correctly formatted with your Service Account key.")
+    st.stop() # Stop the app execution here to prevent cascade errors
+
+# Output directory setup
+OUTPUT_BASE = "Lake_Analysis_Output" # Changed for Cloud compatibility (Cloud doesn't have F: drive)
 if not os.path.exists(OUTPUT_BASE):
     os.makedirs(OUTPUT_BASE)
 
@@ -541,3 +542,4 @@ if run_btn and target:
              
 
         st.success("LakeDelta Analysis Ready.")
+
