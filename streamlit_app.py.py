@@ -383,7 +383,6 @@ class PDFReport(FPDF):
         self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
 
 # --- 4. UI & MAIN LOGIC ---
-import base64 
 
 st.title("🛰️ LakeDelta")
 
@@ -625,6 +624,7 @@ if st.session_state.analysis_complete:
                 st.download_button("Download CSV Data", f, "Data.csv", key="dl_csv")
 
     st.success("LakeDelta Analysis Ready.")
+
 
 
 
