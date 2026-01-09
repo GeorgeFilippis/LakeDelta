@@ -383,6 +383,7 @@ class PDFReport(FPDF):
         self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
 
 # --- 4. UI & MAIN LOGIC ---
+import base64 
 
 st.title("🛰️ LakeDelta")
 
@@ -423,7 +424,7 @@ if run_clicked and target:
     
     current_coords = [target['lon'], target['lat']]
     
-    # 1. FREEZE GEOMETRY (Server -> Client)
+    # 1. FREEZE GEOMETRY
     roi_object = ee.Geometry.Point(current_coords).buffer(buffer_m).bounds()
     fixed_roi = roi_object.getInfo() 
     
@@ -457,8 +458,8 @@ if run_clicked and target:
                     path, 
                     {
                         'dimensions': 600,     
-                        'region': fixed_roi,   # Frozen geometry
-                        'crs': 'EPSG:3857',    # Frozen Grid
+                        'region': fixed_roi,
+                        'crs': 'EPSG:3857',
                         'format': 'jpg'
                     }
                 )
@@ -588,16 +589,26 @@ if st.session_state.analysis_complete:
     with tab3:
          st.markdown("<h3 style='text-align: center; color: #2c3e50;'>🛰️ Annual Satellite Timelapse</h3>", unsafe_allow_html=True)
          
-         # 3. FIX: FORCE HTML CENTERING
-         # Using HTML logic instead of Streamlit columns guarantees it is centered and fixed width.
          gif_path = os.path.join(out_dir, "Timelapse.gif")
          if os.path.exists(gif_path):
              with open(gif_path, "rb") as file_:
                  data_url = base64.b64encode(file_.read()).decode("utf-8")
              
-             # This HTML div aligns the image to the center, no matter how wide the screen is.
+             # Calculate academic years for legend
+             min_y = final_df['Year'].min()
+             max_y = final_df['Year'].max()
+             caption_text = f"<b>Figure 3:</b> Temporal Evolution from {min_y} to {max_y}"
+             
+             # Render Centered Image + Academic Caption
              st.markdown(
-                 f'<div style="text-align: center;"><img src="data:image/gif;base64,{data_url}" width="600" style="border-radius: 5px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"></div>',
+                 f"""
+                 <div style="text-align: center;">
+                     <img src="data:image/gif;base64,{data_url}" width="600" style="border-radius: 5px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+                     <div style="margin-top: 10px; font-size: 0.9em; color: #555; font-family: 'Segoe UI', serif;">
+                        {caption_text}
+                     </div>
+                 </div>
+                 """,
                  unsafe_allow_html=True,
              )
 
@@ -614,5 +625,6 @@ if st.session_state.analysis_complete:
                 st.download_button("Download CSV Data", f, "Data.csv", key="dl_csv")
 
     st.success("LakeDelta Analysis Ready.")
+
 
 
