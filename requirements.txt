@@ -1,6 +1,7 @@
 streamlit
 earthengine-api
 geemap
+google-auth
 matplotlib
 pandas
 opencv-python-headless
