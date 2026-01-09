@@ -13,6 +13,8 @@ from plotly.subplots import make_subplots
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from fpdf import FPDF
+import json
+from google.oauth2.credentials import Credentials
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="LakeDelta", layout="wide", page_icon="💧")
@@ -63,12 +65,29 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Earth Engine Init
+
+# --- EARTH ENGINE AUTHENTICATION ---
+
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+
+# Your Project ID
+PROJECT_ID = ''
+
 try:
-    ee.Initialize() # REPLACE WITH YOUR ID
+    # 1. Try to detect if we are on Streamlit Cloud using Secrets
+    if "EARTHENGINE_TOKEN" in st.secrets:
+        # Reconstruct the credentials from the secret string
+        creds_info = json.loads(st.secrets["EARTHENGINE_TOKEN"])
+        creds = Credentials.from_authorized_user_info(creds_info)
+        ee.Initialize(creds, project=PROJECT_ID)
+        # st.success("Connected to Earth Engine via Cloud Secrets!") # Optional debug
+    else:
+        # 2. If no secrets, assume local machine and use standard auth
+        ee.Initialize(project=PROJECT_ID)
 except:
+    # 3. If all else fails (first time local run), trigger browser auth
     ee.Authenticate()
-    ee.Initialize()
+    ee.Initialize(project=PROJECT_ID)
 
 OUTPUT_BASE = r"F:\Lake_Project\App_Analysis"
 if not os.path.exists(OUTPUT_BASE):
@@ -520,4 +539,5 @@ if run_btn and target:
             with open(pdf_path, "rb") as f: st.download_button("Download AI Report PDF", f, f"{target['name']}_Report.pdf")
             with open(os.path.join(out_dir, "Full_Analysis.csv"), "rb") as f: st.download_button("Download CSV Data", f, "Data.csv")
              
+
         st.success("LakeDelta Analysis Ready.")
