@@ -413,15 +413,18 @@ with st.sidebar:
     st.divider()
     buffer_m = st.slider("Analysis Buffer (meters)", 1000, 20000, 5000, step=1000)
     
-    # We use a callback or just check the button to trigger processing
+    # Check button state
     run_clicked = st.button("🚀 Run Analysis", type="primary")
 
-# --- LOGIC PART 1: PROCESSING (Runs only when button is clicked) ---
+# --- LOGIC PART 1: PROCESSING (Runs ONLY when button is clicked) ---
 if run_clicked and target:
     out_dir = os.path.join(OUTPUT_BASE, target['name'].replace(" ", "_"))
     temp_dir = os.path.join(out_dir, "frames")
     if not os.path.exists(temp_dir): os.makedirs(temp_dir)
-    roi = ee.Geometry.Point([target['lon'], target['lat']]).buffer(buffer_m)
+    
+    # Store coordinates for later use
+    current_coords = [target['lon'], target['lat']]
+    roi = ee.Geometry.Point(current_coords).buffer(buffer_m)
     
     with st.spinner("Processing Global Data (This may take a moment)..."):
         # 1. Earth Engine Loop
@@ -434,8 +437,7 @@ if run_clicked and target:
         for i, year in enumerate(range(2017, 2025)):
             try:
                 img = s2.filter(ee.Filter.calendarRange(year, year, 'year')).median()
-                # Check if image has data by running a small reduction
-                # (Optimization: We verify data exists before processing heavy pixels)
+                # Verification step
                 stats = img.reduceRegion(ee.Reducer.mean(), roi, 100).getInfo()
                 if not stats: continue
 
@@ -448,12 +450,12 @@ if run_clicked and target:
                 
                 records.append({"Year": year, "Area_km": area_km, "NDVI": round(ndvi or 0, 3)})
                 
-                # Image Generation for Timelapse
+                # Thumbnail Generation
                 vis = {'bands': ['B4', 'B3', 'B2'], 'min': 0, 'max': 3000, 'gamma': 1.2}
                 path = os.path.join(temp_dir, f"{year}.jpg")
                 geemap.get_image_thumbnail(img.visualize(**vis), path, {'dimensions': 1000, 'region': roi})
                 
-                # Add Text Banner
+                # Text Overlay
                 img_cv = cv2.imread(path); h, w, _ = img_cv.shape
                 font = cv2.FONT_HERSHEY_SIMPLEX
                 text = f"{year} | Area: {area_km} km2"
@@ -475,8 +477,8 @@ if run_clicked and target:
         
         # 2. Process Dataframes & AI
         df = pd.DataFrame(records)
-        clim_df = get_water_balance([target['lon'], target['lat']], buffer_m, 2017, 2024)
-        seas_df = get_seasonal_profile([target['lon'], target['lat']], buffer_m)
+        clim_df = get_water_balance(current_coords, buffer_m, 2017, 2024)
+        seas_df = get_seasonal_profile(current_coords, buffer_m)
         final_df = pd.merge(df, clim_df, on='Year', how='inner')
         future_years, future_preds = run_ai_forecast(final_df)
         z_score = (final_df.iloc[-1]['Area_km'] - final_df['Area_km'].mean()) / final_df['Area_km'].std()
@@ -485,9 +487,9 @@ if run_clicked and target:
         # Save files
         final_df.to_csv(os.path.join(out_dir, "Full_Analysis.csv"), index=False)
         geemap.make_gif(local_paths, os.path.join(out_dir, "Timelapse.gif"), fps=1)
-        roi_img_path = generate_roi_visual([target['lon'], target['lat']], buffer_m, out_dir, target['name'])
+        roi_img_path = generate_roi_visual(current_coords, buffer_m, out_dir, target['name'])
         
-        # 3. SAVE EVERYTHING TO SESSION STATE
+        # 3. SAVE TO SESSION STATE
         st.session_state.analysis_results = {
             "final_df": final_df,
             "seas_df": seas_df,
@@ -498,14 +500,14 @@ if run_clicked and target:
             "out_dir": out_dir,
             "roi_img_path": roi_img_path,
             "target_name": target['name'],
-            "buffer_m": buffer_m
+            "buffer_m": buffer_m,
+            "coords": current_coords # <--- CRITICAL FIX: Save the coordinates here
         }
         st.session_state.analysis_complete = True
-        st.rerun() # Force a rerun to immediately show the results
+        st.rerun()
 
 # --- LOGIC PART 2: DISPLAY (Runs whenever data is available) ---
 if st.session_state.analysis_complete:
-    # Retrieve data from session state
     res = st.session_state.analysis_results
     final_df = res["final_df"]
     seas_df = res["seas_df"]
@@ -517,6 +519,7 @@ if st.session_state.analysis_complete:
     roi_img_path = res["roi_img_path"]
     target_name = res["target_name"]
     buffer_m = res["buffer_m"]
+    saved_coords = res["coords"] # <--- Retrieve coordinates
     
     # ---------------- UI TABS ----------------
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📸 Spectral Forensics", "🎬 Timelapse", "💾 Downloads"])
@@ -561,29 +564,22 @@ if st.session_state.analysis_complete:
     # --- TAB 2: SPECTRAL FORENSICS ---
     with tab2:
         st.markdown("<h3 style='text-align: center;'>📸 Advanced Spectral Forensics</h3>", unsafe_allow_html=True)
-        # Recalculate years from saved DF to ensure paths are correct
+        
         year_max = int(final_df.loc[final_df['Area_km'].idxmax()]['Year'])
         year_min = int(final_df.loc[final_df['Area_km'].idxmin()]['Year'])
         
-        # Paths based on saved buffer_m
         path_heat = os.path.join(out_dir, f"spectral_heatmap_{buffer_m}.jpg")
         path_diff = os.path.join(out_dir, f"spectral_decline_{buffer_m}.jpg")
         
-        # Only run generation if files are missing (avoids re-running on refresh)
+        # Check if files exist. If not, try to regenerate using SAVED COORDS
         if not (os.path.exists(path_heat) and os.path.exists(path_diff)):
             with st.spinner("Generating JRC Spectral Analysis..."):
-                # We need coordinates to re-run this, we can pull from Target or infer
-                # Assuming 'target' object might be lost, we should have saved lat/lon in session state if we wanted pure safety
-                # But since 'target' is in sidebar, it usually persists. We will use the original logic safely.
-                # If target changed in sidebar, we might get a mismatch, but usually okay for this use case.
-                # Safe fallback:
-                path_heat, path_diff = generate_spectral_forensics([res['final_df']['Area_km'].iloc[0], 0], buffer_m, year_max, year_min, out_dir) # Dummy coords if needed, but better to rely on sidebar target persistence or save coords in session state.
-                # Ideally, save coords in session state too.
-                # RE-FIXING FOR SAFETY:
-                # We will rely on sidebar 'target' being active. If user changed sidebar, they should click run again anyway.
-                pass 
-                
-        # Actually checking if files exist to display
+                try:
+                    # FIX: Use 'saved_coords' (real lat/lon) instead of the invalid dummy list
+                    path_heat, path_diff = generate_spectral_forensics(saved_coords, buffer_m, year_max, year_min, out_dir)
+                except Exception as e:
+                    st.error(f"Could not generate spectral images: {e}")
+
         if os.path.exists(path_heat) and os.path.exists(path_diff):
              c1, c2, c3, c4 = st.columns([1, 2, 2, 1]) 
              with c2:
@@ -593,7 +589,7 @@ if st.session_state.analysis_complete:
                  st.markdown("""<div class="legend-box-split"><div class="legend-title">Fig 2: Ghost Water Depth</div><div class="grad-ghost"></div><div class="legend-labels"><span>Shallow Loss</span><span>Deep Loss</span></div></div>""", unsafe_allow_html=True)
                  st.image(path_diff, use_container_width=True)
         else:
-             st.info("Spectral images not found. Please click 'Run Analysis' again to regenerate.")
+             st.info("Spectral images could not be loaded.")
 
     # --- TAB 3: TIMELAPSE ---
     with tab3:
@@ -607,8 +603,6 @@ if st.session_state.analysis_complete:
     with tab4:
         st.header("Data Export")
         
-        # PDF Generation - Cache this logic usually, or just run it on click
-        # Since we have the DF, we can generate the PDF path easily
         pdf_path = os.path.join(out_dir, f"{target_name}_Report.pdf")
         if not os.path.exists(pdf_path):
              pdf_path = generate_pdf(out_dir, target_name, status, final_df, buffer_m)
@@ -622,7 +616,3 @@ if st.session_state.analysis_complete:
                 st.download_button("Download CSV Data", f, "Data.csv", key="dl_csv")
 
     st.success("LakeDelta Analysis Ready.")
-
-
-
-
