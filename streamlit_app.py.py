@@ -14,7 +14,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from fpdf import FPDF
 import json
-from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="LakeDelta", layout="wide", page_icon="💧")
@@ -542,4 +542,5 @@ if run_btn and target:
              
 
         st.success("LakeDelta Analysis Ready.")
+
 
