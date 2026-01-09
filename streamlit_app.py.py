@@ -595,9 +595,8 @@ if st.session_state.analysis_complete:
     with tab3:
          st.markdown("<h3 style='text-align: center; color: #2c3e50;'>🛰️ Annual Satellite Timelapse</h3>", unsafe_allow_html=True)
          c1, c2, c3 = st.columns([3, 4, 3])
-         gif_path = os.path.join(out_dir, "Timelapse.gif")
-         if os.path.exists(gif_path):
-             with c2: st.image(gif_path, use_container_width=True)
+         with c2: st.image(os.path.join(out_dir, "Timelapse.gif"), use_container_width=True)
+
 
     # --- TAB 4: DOWNLOADS ---
     with tab4:
@@ -616,3 +615,4 @@ if st.session_state.analysis_complete:
                 st.download_button("Download CSV Data", f, "Data.csv", key="dl_csv")
 
     st.success("LakeDelta Analysis Ready.")
+
