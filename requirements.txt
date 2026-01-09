@@ -12,3 +12,4 @@ plotly
 scikit-learn
 fpdf
 kaleido==0.2.1
+base64 
