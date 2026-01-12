@@ -18,7 +18,7 @@ from google.oauth2 import service_account
 import base64 
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="LakeDelta", layout="wide", page_icon="💧")
+st.set_page_config(page_title="LakeDelta Pro", layout="wide", page_icon="💧")
 
 # ACADEMIC CSS
 st.markdown("""
@@ -65,15 +65,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Earth Engine Init
-
 # --- EARTH ENGINE AUTHENTICATION ---
 
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 try:
     # 1. Retrieve secrets from the [earth_engine] section in secrets.toml
-    # Streamlit automatically parses the TOML into a dictionary
     service_account_info = st.secrets["earth_engine"]
 
     # 2. Define the required scope for Earth Engine
@@ -87,11 +84,11 @@ try:
     
 except Exception as e:
     st.error(f"🚨 Earth Engine Authentication Failed: {e}")
-    st.info("Please ensure your .streamlit/secrets.toml file is correctly formatted with your Service Account key.")
-    st.stop() # Stop the app execution here to prevent cascade errors
+    st.info("Please ensure your .streamlit/secrets.toml file is correctly formatted.")
+    st.stop()
 
 # Output directory setup
-OUTPUT_BASE = "Lake_Analysis_Output" # Changed for Cloud compatibility (Cloud doesn't have F: drive)
+OUTPUT_BASE = "Lake_Analysis_Output"
 if not os.path.exists(OUTPUT_BASE):
     os.makedirs(OUTPUT_BASE)
 
@@ -108,9 +105,7 @@ CATALOG = {
 # --- 2. ADVANCED AI & IMAGE PROCESSING ---
 
 def add_roi_legend(image_path, title_text="Analysis Region"):
-    """
-    Adds a title header and a readable legend to the ROI context map.
-    """
+    """Adds a title header and a readable legend to the ROI context map."""
     img = cv2.imread(image_path)
     if img is None: return
     
@@ -132,67 +127,40 @@ def add_roi_legend(image_path, title_text="Analysis Region"):
     thick = 1
     
     # --- Legend Items ---
-    
-    # Red Circle Icon (ROI Limit)
     cv2.circle(footer, (40, 25), 6, (0, 0, 255), 2) # Red in BGR
     cv2.putText(footer, "ROI Limit", (55, 30), font, scale, (50,50,50), thick, cv2.LINE_AA)
     
-    # Blue Box Icon (Measured Water)
     cv2.rectangle(footer, (160, 18), (175, 32), (255, 0, 0), -1) # Blue in BGR
     cv2.putText(footer, "Measured Water", (185, 30), font, scale, (50,50,50), thick, cv2.LINE_AA)
     
-    # Gray Box Icon (Context)
     cv2.rectangle(footer, (300, 18), (315, 32), (120, 120, 120), -1)
     cv2.putText(footer, "Context Area", (325, 30), font, scale, (50,50,50), thick, cv2.LINE_AA)
     
-    # Stack: Header + Image + Footer
     final = np.vstack([header, img])
     cv2.imwrite(image_path, final)
 
 def generate_roi_visual(roi_coords, buffer_m, out_dir, title_text="ROI Analysis"):
-    """
-    Generates a High-Context ROI Map with Natural Color background.
-    """
-    # 1. Define Geometry
+    """Generates a High-Context ROI Map with Natural Color background."""
     center = ee.Geometry.Point(roi_coords)
     roi_circle = center.buffer(buffer_m)
-    
-    # Viewport is 1.5x larger than buffer to show surroundings (avoids zooming in too tight)
     viewport = center.buffer(buffer_m * 1.5).bounds()
     path_roi = os.path.join(out_dir, f"roi_inspect_{buffer_m}.jpg")
     
-    # 2. Fetch Natural Color Mosaic 
-    # .mosaic() is CRITICAL: It stitches images together to prevent black edges/cutoffs
     col = (ee.ImageCollection("COPERNICUS/S2_SR")
            .filterBounds(viewport)
-           .filterDate('2023-06-01', '2023-09-30') # Summer months for clearest water
+           .filterDate('2023-06-01', '2023-09-30')
            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10))
-           .select(['B4', 'B3', 'B2', 'B11'])) # STRICT SELECTION
+           .select(['B4', 'B3', 'B2', 'B11']))
     
-    # Clip the mosaic to our viewport
     img = col.mosaic().clip(viewport)
     
-    # 3. Visualization Layers
-    
-    # Layer A: Natural Color Background (RGB)
-    # slightly dimmed (gamma 1.2) so the overlays pop
     base = img.visualize(bands=['B4', 'B3', 'B2'], min=0, max=3000, gamma=1.2)
-    
-    # Layer B: Water Mask (Bright Blue) 
-    # We clip this to 'roi_circle' so the user sees EXACTLY what is being measured
     water = img.normalizedDifference(['B3', 'B11']).gt(0).selfMask().clip(roi_circle).visualize(palette=['0066ff'], opacity=0.7)
-    
-    # Layer C: ROI Outline (Red)
     outline = ee.Image().paint(roi_circle, 2, 3).visualize(palette=['ff0000'])
     
-    # 4. Composite & Export
     final_vis = base.blend(water).blend(outline)
-    
     geemap.get_image_thumbnail(final_vis, path_roi, {'dimensions': 600, 'region': viewport, 'format': 'jpg'})
-    
-    # 5. Add the text legend and title
     add_roi_legend(path_roi, title_text)
-    
     return path_roi
 
 def add_academic_legend(image_path, mode="heatmap"):
@@ -205,14 +173,10 @@ def add_academic_legend(image_path, mode="heatmap"):
     footer = np.ones((footer_h, w, 3), dtype=np.uint8) * 255
     font = cv2.FONT_HERSHEY_SIMPLEX
     
-    # MICRO FONT SCALES
-    label_scale = 0.28
-    title_scale = 0.35
-    thickness = 1
+    label_scale = 0.28; title_scale = 0.35; thickness = 1
     
     if mode == "heatmap":
         bar_w = int(w * 0.5); bar_x = (w - bar_w) // 2; bar_y = 35
-        # Draw gradient blocks
         cv2.rectangle(footer, (bar_x, bar_y), (bar_x + bar_w//5, bar_y+10), (28, 25, 215), -1) 
         cv2.rectangle(footer, (bar_x + bar_w//5, bar_y), (bar_x + 2*bar_w//5, bar_y+10), (97, 174, 253), -1)
         cv2.rectangle(footer, (bar_x + 2*bar_w//5, bar_y), (bar_x + 3*bar_w//5, bar_y+10), (191, 255, 255), -1)
@@ -231,8 +195,7 @@ def add_academic_legend(image_path, mode="heatmap"):
         cv2.putText(footer, "Deep Loss", (start_x + 170, 44), font, label_scale, (70,70,70), thickness, cv2.LINE_AA)
         cv2.putText(footer, "FIG 2: Spectral Decline Blueprint", ((w-180)//2, 20), font, title_scale, (0,0,0), thickness, cv2.LINE_AA)
 
-    # final_img = np.vstack([img, footer])
-    final_img = np.vstack([img])
+    final_img = np.vstack([img, footer])
     cv2.imwrite(image_path, final_img)
 
 @st.cache_data
@@ -247,7 +210,6 @@ def run_ai_forecast(df):
     future_years = np.array([last_year, last_year + 1, last_year + 2]).reshape(-1, 1)
     preds = model.predict(poly.transform(future_years))
     
-    # Anchor the first prediction to actual last data
     preds[0] = df['Area_km'].iloc[-1]
     return future_years.flatten(), preds
 
@@ -260,17 +222,11 @@ def generate_styled_ai_insight(df, status, z_score, roi_img_path):
     last_rain = df.iloc[-1]['Rainfall_mm']
     
     if "CRITICAL" in status:
-        border_color = "#c0392b"
-        h_class = "hl-crit"
-        icon = "🚨"
+        border_color = "#c0392b"; h_class = "hl-crit"; icon = "🚨"
     elif "Decline" in status:
-        border_color = "#d35400"
-        h_class = "hl-mod"
-        icon = "⚠️"
+        border_color = "#d35400"; h_class = "hl-mod"; icon = "⚠️"
     else:
-        border_color = "#27ae60"
-        h_class = "hl-stab"
-        icon = "✅"
+        border_color = "#27ae60"; h_class = "hl-stab"; icon = "✅"
 
     rain_status = f"<span class='{h_class}'>Below Average</span>" if last_rain < avg_rain else f"<span class='{h_class}'>Above Average</span>"
     outlook_txt = "further contraction" if change_pct < 0 else "stabilization"
@@ -310,9 +266,9 @@ def generate_spectral_forensics(roi_coords, buffer_m, year_max, year_min, out_di
     
     # 2. DECLINE
     img_max = (ee.ImageCollection("COPERNICUS/S2_SR").filterBounds(roi).filter(ee.Filter.calendarRange(year_max, year_max, 'year'))
-               .select(bands_needed).median())
+                .select(bands_needed).median())
     img_min = (ee.ImageCollection("COPERNICUS/S2_SR").filterBounds(roi).filter(ee.Filter.calendarRange(year_min, year_min, 'year'))
-               .select(bands_needed).median())
+                .select(bands_needed).median())
     
     water_max = img_max.normalizedDifference(['B3', 'B11']).gt(0)
     water_min = img_min.normalizedDifference(['B3', 'B11']).gt(0)
@@ -324,7 +280,6 @@ def generate_spectral_forensics(roi_coords, buffer_m, year_max, year_min, out_di
     final_composite = base_gray.where(loss_mask, ghost_vis)
     geemap.get_image_thumbnail(final_composite, path_diff, {'dimensions': 1000, 'region': roi, 'format': 'jpg'})
     
-    # ADD MICRO LEGENDS
     add_academic_legend(path_heat, mode="heatmap")
     add_academic_legend(path_diff, mode="decline")
     
@@ -385,7 +340,7 @@ class PDFReport(FPDF):
 
 # --- 4. UI & MAIN LOGIC ---
 
-st.title("🛰️ LakeDelta")
+st.title("🛰️ LakeDelta Pro")
 
 if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
@@ -441,23 +396,40 @@ if run_clicked and target:
                 stats = img.reduceRegion(ee.Reducer.mean(), roi_object, 100).getInfo()
                 if not stats: continue
 
+                # --- WATER AREA CALCULATION ---
                 mndwi = img.normalizedDifference(['B3', 'B11'])
                 water = mndwi.gt(0).rename('water')
                 area = water.multiply(ee.Image.pixelArea()).reduceRegion(ee.Reducer.sum(), roi_object, 20, maxPixels=1e9).get('water').getInfo()
                 area_km = round(area / 1e6, 2) if area else 0.0
                 
-                ndvi = img.normalizedDifference(['B8', 'B4']).reduceRegion(ee.Reducer.mean(), roi_object, 100).get('nd').getInfo()
-                records.append({"Year": year, "Area_km": area_km, "NDVI": round(ndvi or 0, 3)})
+                # --- NDVI SPLIT CALCULATIONS ---
+                ndvi_raw = img.normalizedDifference(['B8', 'B4'])
                 
-                vis = {'bands': ['B4', 'B3', 'B2'], 'min': 0, 'max': 3000, 'gamma': 1.2}
-                path = os.path.join(temp_dir, f"{year}.jpg")
+                # 1. Total Buffer
+                ndvi_total = ndvi_raw.reduceRegion(ee.Reducer.mean(), roi_object, 100).get('nd').getInfo()
+                
+                # 2. Water Only (Algae/Turbidity)
+                ndvi_water = ndvi_raw.updateMask(water).reduceRegion(ee.Reducer.mean(), roi_object, 100).get('nd').getInfo()
+                
+                # 3. Land Only (Vegetation)
+                ndvi_land = ndvi_raw.updateMask(water.Not()).reduceRegion(ee.Reducer.mean(), roi_object, 100).get('nd').getInfo()
+
+                records.append({
+                    "Year": year, 
+                    "Area_km": area_km, 
+                    "NDVI_Total": round(ndvi_total or 0, 3),
+                    "NDVI_Water": round(ndvi_water or 0, 3),
+                    "NDVI_Land": round(ndvi_land or 0, 3)
+                })
                 
                 # 2. GENERATE AT DISPLAY SIZE (600px)
+                vis = {'bands': ['B4', 'B3', 'B2'], 'min': 0, 'max': 3000, 'gamma': 1.2}
+                path = os.path.join(temp_dir, f"{year}.jpg")
                 geemap.get_image_thumbnail(
                     img.visualize(**vis), 
                     path, 
                     {
-                        'dimensions': 600,     
+                        'dimensions': 600,      
                         'region': fixed_roi,
                         'crs': 'EPSG:3857',
                         'format': 'jpg'
@@ -536,6 +508,7 @@ if st.session_state.analysis_complete:
             if roi_img_path and os.path.exists(roi_img_path):
                 st.image(roi_img_path, caption="🔴 ROI Analysis Zone (5km)", use_container_width=True)
         
+        # COMBO CHART
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         fig.add_trace(go.Bar(x=final_df['Year'], y=final_df['Rainfall_mm'], name="Rainfall (mm)", marker_color='rgba(0, 196, 154, 0.4)', width=0.3), secondary_y=True)
         fig.add_trace(go.Scatter(x=final_df['Year'], y=final_df['Area_km'], name="Water Area (km²)", mode='lines+markers', line=dict(color='#1E88E5', width=4), marker=dict(size=8, color='#1E88E5')), secondary_y=False)
@@ -543,15 +516,46 @@ if st.session_state.analysis_complete:
         fig.update_layout(title="Hydrological Correlation & AI Forecast", title_x=0.5, template="plotly_white", legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center'), height=450, hovermode="x unified", xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#f0f0f0'))
         st.plotly_chart(fig, use_container_width=True)
         
-        fig_eco = go.Figure(data=go.Scatter(
-            x=final_df['Year'], y=final_df['Area_km'], 
-            mode='lines+markers+text', 
-            text=final_df['NDVI'].apply(lambda x: f"NDVI: {x}"),
-            textposition="top center",
-            line=dict(color='gray', width=1, dash='dash'),
-            marker=dict(size=18, color=final_df['NDVI'], colorscale='RdYlGn', showscale=True, colorbar=dict(title="Eco Health"))
+        # ECO-CHART (Split Logic)
+        fig_eco = go.Figure()
+        
+        # Trace 1: Land Vegetation
+        fig_eco.add_trace(go.Scatter(
+            x=final_df['Year'], y=final_df['NDVI_Land'],
+            name="Surrounding Vegetation",
+            mode='lines+markers',
+            line=dict(color='#2ecc71', width=2),
+            marker=dict(symbol='circle')
         ))
-        fig_eco.update_layout(title="Eco-Health Correlation (Area vs NDVI over Time)", title_x=0.5, xaxis_title="Year", yaxis_title="Water Area (km²)", template="plotly_white", height=450)
+
+        # Trace 2: Water Quality (Algae)
+        fig_eco.add_trace(go.Scatter(
+            x=final_df['Year'], y=final_df['NDVI_Water'],
+            name="Water Turbidity/Algae",
+            mode='lines+markers',
+            line=dict(color='#2980b9', width=2, dash='dot'),
+            marker=dict(symbol='triangle-up')
+        ))
+        
+        # Trace 3: Total Area (Context)
+        fig_eco.add_trace(go.Scatter(
+            x=final_df['Year'], y=final_df['Area_km'],
+            name="Water Surface Area",
+            yaxis="y2",
+            line=dict(color='rgba(100,100,100,0.3)', width=1),
+            marker=dict(opacity=0)
+        ))
+
+        fig_eco.update_layout(
+            title="Eco-Health: Land vs Water Signals",
+            title_x=0.5,
+            xaxis_title="Year",
+            yaxis_title="NDVI Value",
+            yaxis2=dict(title="Area km²", overlaying="y", side="right", showgrid=False),
+            template="plotly_white", 
+            height=450,
+            legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center')
+        )
         st.plotly_chart(fig_eco, use_container_width=True)
 
         fig_s = go.Figure(data=[
@@ -594,12 +598,10 @@ if st.session_state.analysis_complete:
              with open(gif_path, "rb") as file_:
                  data_url = base64.b64encode(file_.read()).decode("utf-8")
              
-             # Calculate academic years for legend
              min_y = final_df['Year'].min()
              max_y = final_df['Year'].max()
              caption_text = f"<b>Figure 3:</b> Temporal Evolution from {min_y} to {max_y}"
              
-             # Render Centered Image + Academic Caption
              st.markdown(
                  f"""
                  <div style="text-align: center;">
@@ -625,8 +627,3 @@ if st.session_state.analysis_complete:
                 st.download_button("Download CSV Data", f, "Data.csv", key="dl_csv")
 
     st.success("LakeDelta Analysis Ready.")
-
-
-
-
-
