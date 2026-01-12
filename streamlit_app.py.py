@@ -487,7 +487,7 @@ if run_clicked and target:
         status = "CRITICAL DROUGHT" if z_score < -1.5 else "Moderate Decline" if z_score < -0.5 else "Stable"
         
         final_df.to_csv(os.path.join(out_dir, "Full_Analysis.csv"), index=False)
-        geemap.make_gif(local_paths, os.path.join(out_dir, "Timelapse.gif"), fps=0.5)
+        geemap.make_gif(local_paths, os.path.join(out_dir, "Timelapse.gif"), fps=3)
         roi_img_path = generate_roi_visual(current_coords, buffer_m, out_dir, target['name'])
         
         st.session_state.analysis_results = {
@@ -543,42 +543,35 @@ if st.session_state.analysis_complete:
         fig.update_layout(title="Hydrological Correlation & AI Forecast", title_x=0.5, template="plotly_white", legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center'), height=450, hovermode="x unified", xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#f0f0f0'))
         st.plotly_chart(fig, use_container_width=True)
         
-        # ECO-CHART (Split Logic + Color Coding + Thicker Lines)
-        fig_eco = go.Figure()
-        
-        # Trace 1: Land Vegetation (GREEN, Thick Line)
-        fig_eco.add_trace(go.Scatter(
-            x=final_df['Year'], y=final_df['NDVI_Land'],
-            name="Surrounding Vegetation",
-            mode='lines+markers',
-            line=dict(color='#27ae60', width=4), # Green + Thick
-            marker=dict(symbol='circle', size=8)
-        ))
-
-        # Trace 2: Water Quality (BLUE, Thick Line)
-        fig_eco.add_trace(go.Scatter(
-            x=final_df['Year'], y=final_df['NDVI_Water'],
-            name="Water Turbidity/Algae",
-            mode='lines+markers',
-            line=dict(color='#2980b9', width=4, dash='solid'), # Blue + Thick
-            marker=dict(symbol='triangle-up', size=8)
+        # ECO-CHART (Restored Single Line "Green-Red" Style)
+        fig_eco = go.Figure(data=go.Scatter(
+            x=final_df['Year'], y=final_df['Area_km'], 
+            mode='lines+markers+text', 
+            text=final_df['NDVI_Land'].apply(lambda x: f"Veg: {x}"),
+            textposition="top center",
+            line=dict(color='gray', width=1, dash='dash'), # Context line
+            # DYNAMIC COLOR MARKERS (Red-Green Scale linked to Vegetation Health)
+            marker=dict(
+                size=18, 
+                color=final_df['NDVI_Land'], # Color source: Land Greenness
+                colorscale='RdYlGn', 
+                showscale=True, 
+                colorbar=dict(title="Vegetation Health")
+            )
         ))
         
-        # Calculate dynamic range for zoom (Min/Max of both datasets)
-        all_ndvi = pd.concat([final_df['NDVI_Land'], final_df['NDVI_Water']])
-        y_min = all_ndvi.min() * 0.95
-        y_max = all_ndvi.max() * 1.05
+        # Dynamic Zoom
+        y_min = final_df['Area_km'].min() * 0.95
+        y_max = final_df['Area_km'].max() * 1.05
 
         fig_eco.update_layout(
-            title="Eco-Health: Land (Green) vs Water (Blue) Signals",
+            title="Eco-Health: Water Area vs. Surrounding Vegetation (Red=Dry, Green=Healthy)",
             title_x=0.5,
             xaxis_title="Year",
-            yaxis_title="NDVI Value",
-            # SMART SCALING (Zoom in)
+            yaxis_title="Water Area (km²)",
             yaxis=dict(range=[y_min, y_max]),
             template="plotly_white", 
-            height=450,
-            legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center')
+            height=450
         )
         st.plotly_chart(fig_eco, use_container_width=True)
 
