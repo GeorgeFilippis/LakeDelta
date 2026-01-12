@@ -70,18 +70,10 @@ st.markdown("""
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 try:
-    # 1. Retrieve secrets from the [earth_engine] section in secrets.toml
     service_account_info = st.secrets["earth_engine"]
-
-    # 2. Define the required scope for Earth Engine
     scopes = ['https://www.googleapis.com/auth/earthengine']
-
-    # 3. Create the credentials object
     creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=scopes)
-
-    # 4. Initialize Earth Engine
     ee.Initialize(credentials=creds)
-    
 except Exception as e:
     st.error(f"🚨 Earth Engine Authentication Failed: {e}")
     st.info("Please ensure your .streamlit/secrets.toml file is correctly formatted.")
@@ -116,7 +108,6 @@ def add_roi_legend(image_path, title_text="Analysis Region"):
     header = np.zeros((header_h, w, 3), dtype=np.uint8) # Black background
     font = cv2.FONT_HERSHEY_SIMPLEX
     
-    # Center the title text
     (tw, th), _ = cv2.getTextSize(title_text, font, 0.7, 2)
     cv2.putText(header, title_text, ((w-tw)//2, 28), font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
     
@@ -126,7 +117,6 @@ def add_roi_legend(image_path, title_text="Analysis Region"):
     scale = 0.5
     thick = 1
     
-    # --- Legend Items ---
     cv2.circle(footer, (40, 25), 6, (0, 0, 255), 2) # Red in BGR
     cv2.putText(footer, "ROI Limit", (55, 30), font, scale, (50,50,50), thick, cv2.LINE_AA)
     
@@ -213,7 +203,7 @@ def run_ai_forecast(df):
     preds[0] = df['Area_km'].iloc[-1]
     return future_years.flatten(), preds
 
-def generate_styled_ai_insight(df, status, z_score, roi_img_path):
+def generate_styled_ai_insight(df, status, z_score, roi_img_path, year_range, months_txt):
     """Generates the Pro HTML report."""
     start_area = df.iloc[0]['Area_km']
     end_area = df.iloc[-1]['Area_km']
@@ -230,19 +220,20 @@ def generate_styled_ai_insight(df, status, z_score, roi_img_path):
 
     rain_status = f"<span class='{h_class}'>Below Average</span>" if last_rain < avg_rain else f"<span class='{h_class}'>Above Average</span>"
     outlook_txt = "further contraction" if change_pct < 0 else "stabilization"
+    period_txt = f"{year_range[0]} - {year_range[1]}"
 
     html = ""
     html += f'<div class="report-container" style="border-top: 5px solid {border_color};">'
-    html += f'<div class="report-header">{icon} &nbsp; Executive Hydrological Summary</div>'
+    html += f'<div class="report-header">{icon} &nbsp; Executive Hydrological Summary ({period_txt})</div>'
     html += f'<div class="metric-row">'
     html += f'<div class="metric-box"><div class="metric-label">Diagnosis</div><div class="metric-value" style="color:{border_color}">{status}</div></div>'
-    html += f'<div class="metric-box"><div class="metric-label">7-Year Trend</div><div class="metric-value">{change_pct:+.1f}%</div></div>'
-    html += f'<div class="metric-box"><div class="metric-label">Z-Score</div><div class="metric-value">{z_score:.2f} σ</div></div>'
+    html += f'<div class="metric-box"><div class="metric-label">Total Trend</div><div class="metric-value">{change_pct:+.1f}%</div></div>'
+    html += f'<div class="metric-box"><div class="metric-label">Observed Months</div><div class="metric-value" style="font-size: 0.9rem;">{months_txt}</div></div>'
     html += f'</div>'
     html += f'<div class="report-body">'
     html += f'<b>Analysis:</b> Satellite earth observation data indicates a long-term <span class="{h_class}">{status.lower()}</span> trend in reservoir surface area. '
     html += f'Recent climatic inputs show precipitation levels are currently {rain_status} ({last_rain}mm) relative to the historical annual mean ({avg_rain:.0f}mm).<br><br>'
-    html += f'<b>Outlook (2025-2026):</b> Based on polynomial regression modeling of historical trends, the system is projected to experience <b>{outlook_txt}</b> in the near term, barring significant meteorological shifts.'
+    html += f'<b>Outlook (Next 2 Years):</b> Based on polynomial regression modeling of historical trends, the system is projected to experience <b>{outlook_txt}</b> in the near term, barring significant meteorological shifts.'
     html += f'</div></div>'
     
     return html
@@ -368,11 +359,35 @@ with st.sidebar:
         target = {"name": name, "lat": lat, "lon": lon}
         
     st.divider()
+    
+    # --- TIME & DATE CONTROL ---
+    st.subheader("📅 Temporal Settings")
+    year_range = st.slider("Analysis Years", 2017, 2025, (2017, 2025))
+    
+    month_options = {
+        "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+        "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12
+    }
+    selected_months = st.multiselect("Seasonal Window (Months to Analyze)", list(month_options.keys()), default=["Jun", "Jul", "Aug", "Sep"])
+    
+    st.divider()
     buffer_m = st.slider("Analysis Buffer (meters)", 1000, 20000, 5000, step=1000)
     run_clicked = st.button("🚀 Run Analysis", type="primary")
 
 # --- LOGIC PART 1: PROCESSING ---
 if run_clicked and target:
+    if not selected_months:
+        st.error("Please select at least one month to analyze.")
+        st.stop()
+        
+    # Convert month names to integers
+    target_months = [month_options[m] for m in selected_months]
+    min_m = min(target_months)
+    max_m = max(target_months)
+    
+    # Check if months are contiguous (optional optimization, but good for filtering)
+    is_contiguous = (max_m - min_m + 1) == len(target_months)
+    
     out_dir = os.path.join(OUTPUT_BASE, target['name'].replace(" ", "_"))
     temp_dir = os.path.join(out_dir, "frames")
     if not os.path.exists(temp_dir): os.makedirs(temp_dir)
@@ -383,14 +398,22 @@ if run_clicked and target:
     roi_object = ee.Geometry.Point(current_coords).buffer(buffer_m).bounds()
     fixed_roi = roi_object.getInfo() 
     
-    with st.spinner("Processing Global Data..."):
-        s2 = (ee.ImageCollection("COPERNICUS/S2_SR").filterBounds(roi_object).filter(ee.Filter.calendarRange(6, 9, 'month'))
-              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)).select(['B4', 'B3', 'B2', 'B8', 'B11']))
+    with st.spinner(f"Processing Data ({year_range[0]}-{year_range[1]})..."):
+        # Base Collection Filtered by Month Range (Using min/max approximation for simple range)
+        s2 = (ee.ImageCollection("COPERNICUS/S2_SR")
+              .filterBounds(roi_object)
+              .filter(ee.Filter.calendarRange(min_m, max_m, 'month')) 
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+              .select(['B4', 'B3', 'B2', 'B8', 'B11']))
         
         records = []; local_paths = []
         bar = st.progress(0)
         
-        for i, year in enumerate(range(2017, 2025)):
+        # Loop through Selected Years
+        years_to_process = range(year_range[0], year_range[1] + 1)
+        total_years = len(years_to_process)
+        
+        for i, year in enumerate(years_to_process):
             try:
                 img = s2.filter(ee.Filter.calendarRange(year, year, 'year')).median()
                 stats = img.reduceRegion(ee.Reducer.mean(), roi_object, 100).getInfo()
@@ -449,14 +472,14 @@ if run_clicked and target:
             except Exception as e:
                 print(f"Skipping {year}: {e}")
                 continue
-            bar.progress((i + 1) / 8)
+            bar.progress((i + 1) / total_years)
 
         if not records: 
-            st.error("No valid satellite data found.")
+            st.error("No valid satellite data found for this period.")
             st.stop()
         
         df = pd.DataFrame(records)
-        clim_df = get_water_balance(current_coords, buffer_m, 2017, 2024)
+        clim_df = get_water_balance(current_coords, buffer_m, year_range[0], year_range[1])
         seas_df = get_seasonal_profile(current_coords, buffer_m)
         final_df = pd.merge(df, clim_df, on='Year', how='inner')
         future_years, future_preds = run_ai_forecast(final_df)
@@ -478,7 +501,9 @@ if run_clicked and target:
             "roi_img_path": roi_img_path,
             "target_name": target['name'],
             "buffer_m": buffer_m,
-            "coords": current_coords 
+            "coords": current_coords,
+            "year_range": year_range,
+            "months_txt": ", ".join(selected_months)
         }
         st.session_state.analysis_complete = True
         st.rerun()
@@ -497,13 +522,15 @@ if st.session_state.analysis_complete:
     target_name = res["target_name"]
     buffer_m = res["buffer_m"]
     saved_coords = res["coords"]
+    year_range = res.get("year_range", (2017, 2025))
+    months_txt = res.get("months_txt", "Summer")
     
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📸 Spectral Forensics", "🎬 Timelapse", "💾 Downloads"])
 
     with tab1:
         c1, c2 = st.columns([2, 1])
         with c1:
-            st.markdown(generate_styled_ai_insight(final_df, status, z_score, roi_img_path), unsafe_allow_html=True)
+            st.markdown(generate_styled_ai_insight(final_df, status, z_score, roi_img_path, year_range, months_txt), unsafe_allow_html=True)
         with c2:
             if roi_img_path and os.path.exists(roi_img_path):
                 st.image(roi_img_path, caption="🔴 ROI Analysis Zone (5km)", use_container_width=True)
@@ -516,42 +543,39 @@ if st.session_state.analysis_complete:
         fig.update_layout(title="Hydrological Correlation & AI Forecast", title_x=0.5, template="plotly_white", legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center'), height=450, hovermode="x unified", xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#f0f0f0'))
         st.plotly_chart(fig, use_container_width=True)
         
-        # ECO-CHART (Split Logic)
+        # ECO-CHART (Split Logic + Color Coding + Thicker Lines)
         fig_eco = go.Figure()
         
-        # Trace 1: Land Vegetation
+        # Trace 1: Land Vegetation (GREEN, Thick Line)
         fig_eco.add_trace(go.Scatter(
             x=final_df['Year'], y=final_df['NDVI_Land'],
             name="Surrounding Vegetation",
             mode='lines+markers',
-            line=dict(color='#2ecc71', width=2),
-            marker=dict(symbol='circle')
+            line=dict(color='#27ae60', width=4), # Green + Thick
+            marker=dict(symbol='circle', size=8)
         ))
 
-        # Trace 2: Water Quality (Algae)
+        # Trace 2: Water Quality (BLUE, Thick Line)
         fig_eco.add_trace(go.Scatter(
             x=final_df['Year'], y=final_df['NDVI_Water'],
             name="Water Turbidity/Algae",
             mode='lines+markers',
-            line=dict(color='#2980b9', width=2, dash='dot'),
-            marker=dict(symbol='triangle-up')
+            line=dict(color='#2980b9', width=4, dash='solid'), # Blue + Thick
+            marker=dict(symbol='triangle-up', size=8)
         ))
         
-        # Trace 3: Total Area (Context)
-        fig_eco.add_trace(go.Scatter(
-            x=final_df['Year'], y=final_df['Area_km'],
-            name="Water Surface Area",
-            yaxis="y2",
-            line=dict(color='rgba(100,100,100,0.3)', width=1),
-            marker=dict(opacity=0)
-        ))
+        # Calculate dynamic range for zoom (Min/Max of both datasets)
+        all_ndvi = pd.concat([final_df['NDVI_Land'], final_df['NDVI_Water']])
+        y_min = all_ndvi.min() * 0.95
+        y_max = all_ndvi.max() * 1.05
 
         fig_eco.update_layout(
-            title="Eco-Health: Land vs Water Signals",
+            title="Eco-Health: Land (Green) vs Water (Blue) Signals",
             title_x=0.5,
             xaxis_title="Year",
             yaxis_title="NDVI Value",
-            yaxis2=dict(title="Area km²", overlaying="y", side="right", showgrid=False),
+            # SMART SCALING (Zoom in)
+            yaxis=dict(range=[y_min, y_max]),
             template="plotly_white", 
             height=450,
             legend=dict(orientation="h", y=1.1, x=0.5, xanchor='center')
