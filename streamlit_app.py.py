@@ -1,6 +1,7 @@
 import streamlit as st
 import ee
-import geemap.foliumap as geemap
+# import geemap.foliumap as geemap
+import geemap
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
@@ -660,3 +661,4 @@ if st.session_state.analysis_complete:
                 st.download_button("Download CSV Data", f, "Data.csv", key="dl_csv")
 
     st.success("LakeDelta Analysis Ready.")
+
