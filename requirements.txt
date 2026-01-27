@@ -1,6 +1,6 @@
 streamlit
 earthengine-api
-geemap
+geemap>=0.30.0
 google-auth
 matplotlib
 pandas
@@ -12,4 +12,5 @@ plotly
 scikit-learn
 fpdf
 kaleido==0.2.1
+
 
