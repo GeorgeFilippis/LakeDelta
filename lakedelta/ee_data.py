@@ -672,11 +672,25 @@ def _rect(bbox):
     return ee.Geometry.Rectangle(bbox, None, False)
 
 
+# def _outline(geojson: dict, color: str, width: int = 2):
+#     ee = _ee()
+#     fc = ee.FeatureCollection([ee.Feature(ee.Geometry(geojson))])
+#     return ee.Image().byte().paint(fc, 1, width).visualize(palette=[color])
+  
 def _outline(geojson: dict, color: str, width: int = 2):
     ee = _ee()
     fc = ee.FeatureCollection([ee.Feature(ee.Geometry(geojson))])
-    return ee.Image().byte().paint(fc, 1, width).visualize(palette=[color])
-
+    
+    # We must explicitly cast this to a 3-band RGB visualizer
+    # so it can be safely blended with the true-color imagery.
+    painted = ee.Image().byte().paint(fc, 1, width)
+    
+    return painted.visualize(
+        palette=[color],
+        min=0,
+        max=1,
+        forceRgbOutput=True # <--- THIS IS THE MAGIC FIX
+    )
 
 def _true_color(col):
     return col.median().visualize(bands=["red", "green", "blue"], min=0.0, max=0.3, gamma=1.3)
