@@ -55,10 +55,26 @@ def step(name):
     return deco
 
 
+# def init(args):
+#     import ee
+
+#     if args.key:
+#         from google.oauth2 import service_account
+
+#         from lakedelta.ee_auth import EE_SCOPES
+
+#         info = json.load(open(args.key))
+#         creds = service_account.Credentials.from_service_account_info(info, scopes=EE_SCOPES)
+#         ee.Initialize(credentials=creds, project=args.project or info.get("project_id"))
+#     else:
+#         ee.Initialize(project=args.project)
+#     print(f"Earth Engine initialised (earthengine-api {ee.__version__}).")
+
 def init(args):
     import ee
 
     if args.key:
+        print("✅ SUCCESS: The script is using the service account key!") # <--- Add this line
         from google.oauth2 import service_account
 
         from lakedelta.ee_auth import EE_SCOPES
@@ -67,9 +83,9 @@ def init(args):
         creds = service_account.Credentials.from_service_account_info(info, scopes=EE_SCOPES)
         ee.Initialize(credentials=creds, project=args.project or info.get("project_id"))
     else:
+        print("⚠️ NOTICE: No key provided, trying default login...") # <--- You can add this too
         ee.Initialize(project=args.project)
     print(f"Earth Engine initialised (earthengine-api {ee.__version__}).")
-
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
