@@ -408,7 +408,7 @@ def landsat(sensor: str, region, start: str, end: str):
         clear = qa.bitwiseAnd(bits).eq(0).And(img.select("QA_RADSAT").eq(0))
         sr = img.select(bands).multiply(0.0000275).add(-0.2).rename(COMMON)
         lst = img.select(thermal).multiply(0.00341802).add(149.0 - 273.15).rename("lst")
-        out = sr.addBands(lst).updateMask(clear)
+        out = sr.addBands(lst).updateMask(clear).toFloat() # <-- ADD .toFloat() HERE
         return ee.Image(out.set("system:time_start", img.get("system:time_start"))
                         .set("sensor", sensor))
 
@@ -424,7 +424,7 @@ def sentinel2(region, start: str, end: str):
         clear = img.select("cs_cdf").gte(C.CS_PLUS_THRESHOLD).And(img.select("SCL").neq(11))
         sr = (img.select(["B2", "B3", "B4", "B8", "B11", "B12", "B5"]).divide(10000)
               .rename(COMMON + ["rededge1"]))
-        return ee.Image(sr.updateMask(clear)
+        return ee.Image(sr.updateMask(clear).toFloat()
                         .set("system:time_start", img.get("system:time_start"))
                         .set("sensor", "S2"))
 
