@@ -1,16 +1,17 @@
-streamlit
-earthengine-api
-geemap>=0.30.0
-google-auth
-matplotlib
-pandas
-opencv-python-headless
-numpy
-Pillow
-geopy
-plotly
-scikit-learn
-fpdf
-kaleido==0.2.1
-
-
+# Tested with Python 3.13 and the newest version in each range (October 2026).
+# Python 3.11 or newer is required.
+streamlit>=1.65,<2
+earthengine-api>=1.6,<2
+google-auth>=2.30
+folium>=0.19,<1
+streamlit-folium>=0.25,<1
+plotly>=6.0,<8
+pandas>=2.2,<4
+numpy>=1.26,<3
+scipy>=1.13,<2
+pymannkendall>=1.4.3,<2
+matplotlib>=3.8,<4
+fpdf2>=2.8,<3
+Pillow>=10.3,<13
+shapely>=2.0,<3
+requests>=2.31,<3
